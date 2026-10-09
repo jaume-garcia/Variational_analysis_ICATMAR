@@ -69,9 +69,9 @@ mask_interp = ma.interp_grid_eta(xi, yi, mask, lon_grid_LS, lat_grid_LS, mask_co
 # GAP CLASSIFICATION PARAMETERS
 # ------------------------------------------------------------------------------------
 
-SMALL_THRESHOLD  = 4   # gaps with fewer pixels than this → small
+SMALL_THRESHOLD  = 10   # gaps with fewer pixels than this → small
                        # gaps with >= SMALL_THRESHOLD pixels → large
-CLOSING_SIZE     = 4   # size of the square structuring element for binary_closing
+CLOSING_SIZE     = 10   # size of the square structuring element for binary_closing
                        # (e.g. 3 → 3×3, 5 → 5×5, 10 → 10×10)
 
 
@@ -214,7 +214,7 @@ def plot_gaps(lon, lat, speed, mask, domain_mask, small_mask, large_mask, output
     fig.suptitle(date.strftime("%Y-%m-%d  %H:%M UTC"), fontsize=14, fontweight="bold", y=1.01)
 
     # Subplot 0: velocity field with gaps
-    pm0 = ax0.pcolormesh(lon, lat, speed, cmap="viridis", transform=ccrs.PlateCarree())
+    pm0 = ax0.pcolormesh(lon, lat, speed, cmap="viridis", vmin=0, vmax=0.7,transform=ccrs.PlateCarree())
     plt.colorbar(pm0, ax=ax0, label="Speed (m/s)", shrink=0.7)
     land_mask = (mask_interp <= 0.5).astype(float)
     ax0.contourf(lon_grid_LS, lat_grid_LS, land_mask, levels=[0.5, 1.0], cmap="copper", alpha=1.0,
@@ -247,7 +247,7 @@ def plot_gaps(lon, lat, speed, mask, domain_mask, small_mask, large_mask, output
                  transform=ccrs.PlateCarree())
     plot_radars(ax1)
     cbar1.set_ticks([0, 1, 2, 3])
-    cbar1.set_ticklabels(["No data", "HF-Radar data", "Small gap (<4)", "Large gap (>=4)"])
+    cbar1.set_ticklabels(["No data", "HF-Radar data", "Small gap (<10)", "Large gap (>=10)"])
     ax1.set_title("Gap classification")
     ax1.set_extent([lon.min(), lon.max(), lat.min(), lat.max()], crs=ccrs.PlateCarree())
     gl1 = ax1.gridlines(draw_labels=True, dms=True, x_inline=False, y_inline=False,
@@ -435,83 +435,83 @@ for i in range(n_times):
 
     print(f"  Gap pixels — small: {small_mask.sum()}  |  large: {large_mask.sum()}")
 
-    # Detect first snapshot with small/large gap within ROI
-    # lon_grid_LS has shape (nx, ny) with indexing [col, row], same as lat_grid_LS
-    bbox_mask = (
-        (lat_grid_LS >= LAT_MIN) & (lat_grid_LS <= LAT_MAX) &
-        (lon_grid_LS >= LON_MIN) & (lon_grid_LS <= LON_MAX)
-    )
-
-    if not _found_small and (small_mask & bbox_mask).sum() > 0:
-        _found_small = True
-        small_date = start_date + timedelta(hours=int(i))
-        cols_s, rows_s = np.where(small_mask & bbox_mask)
-        c0, r0 = cols_s[0], rows_s[0]
-        lon_small = lon_grid_LS[c0, r0]
-        lat_small = lat_grid_LS[c0, r0]
-        snap_small = i
-        print(f"\n>>> FIRST SMALL GAP (within bbox) found at snapshot i={i}  ({small_date})"
-              f"  — example pixel: col={c0}, row={r0}"
-              f"  (lon={lon_small}, lat={lat_small})"
-              f"  [small gap pixels in bbox = {(small_mask & bbox_mask).sum()}"
-              f"  | total small gaps = {small_mask.sum()}]\n")
-
-    if not _found_large and (large_mask & bbox_mask).sum() > 0:
-        _found_large = True
-        large_date = start_date + timedelta(hours=int(i))
-        cols_l, rows_l = np.where(large_mask & bbox_mask)
-        c0, r0 = cols_l[0], rows_l[0]
-        lon_large = lon_grid_LS[c0, r0]
-        lat_large = lat_grid_LS[c0, r0]
-        snap_large = i
-        print(f"\n>>> FIRST LARGE GAP (within bbox) found at snapshot i={i}  ({large_date})"
-              f"  — example pixel: col={c0}, row={r0}"
-              f"  (lon={lon_large}, lat={lat_large})"
-              f"  [large gap pixels in bbox = {(large_mask & bbox_mask).sum()}"
-              f"  | total large gaps = {large_mask.sum()}]\n")
-
-    if _found_small and _found_large:
-        print(">>> Both small and large gaps found within bbox. Terminating program.")
-
-        # Map with both points
-        fig_pts, ax_pts = plt.subplots(
-            figsize=(8, 7),
-            subplot_kw={"projection": ccrs.Mercator()}
-        )
-        ax_pts.set_extent([0, 4.5, 39.5, 43.06], crs=ccrs.PlateCarree())
-        ax_pts.gridlines(draw_labels=True, linewidth=0.4, color="gray",
-                         alpha=0.6, linestyle="--")
-        land_mask = (mask_interp <= 0.5).astype(float)
-        ax_pts.contourf(lon_grid_LS, lat_grid_LS, land_mask, levels=[0.5, 1.0], cmap="copper", alpha=1.0, transform=ccrs.PlateCarree())
-
-        # Small gap point
-        ax_pts.plot(lon_small, lat_small,
-                    marker="o", markersize=10, color="dodgerblue",
-                    markeredgecolor="black", markeredgewidth=0.8,
-                    transform=ccrs.PlateCarree(), zorder=5,
-                    label=f"Small gap (i={snap_small})\nlon={lon_small:.4f}, lat={lat_small:.4f}")
-
-        # Large gap point
-        ax_pts.plot(lon_large, lat_large,
-                    marker="^", markersize=11, color="tomato",
-                    markeredgecolor="black", markeredgewidth=0.8,
-                    transform=ccrs.PlateCarree(), zorder=5,
-                    label=f"Large gap (i={snap_large})\nlon={lon_large:.4f}, lat={lat_large:.4f}")
-
-        ax_pts.legend(loc="lower left", fontsize=8, framealpha=0.9)
-        ax_pts.set_title("First small and large gap points within bbox", fontsize=11)
-
-        output_pts = "../figures/january_2026/gaps/first_gap_bbox.png"
-        fig_pts.savefig(output_pts, dpi=150, bbox_inches="tight")
-        plt.close(fig_pts)
-        print(f"  Map saved to: {output_pts}")
-
-        sys.exit(0)
+    # # Detect first snapshot with small/large gap within ROI
+    # # lon_grid_LS has shape (nx, ny) with indexing [col, row], same as lat_grid_LS
+    # bbox_mask = (
+    #     (lat_grid_LS >= LAT_MIN) & (lat_grid_LS <= LAT_MAX) &
+    #     (lon_grid_LS >= LON_MIN) & (lon_grid_LS <= LON_MAX)
+    # )
+    #
+    # if not _found_small and (small_mask & bbox_mask).sum() > 0:
+    #     _found_small = True
+    #     small_date = start_date + timedelta(hours=int(i))
+    #     cols_s, rows_s = np.where(small_mask & bbox_mask)
+    #     c0, r0 = cols_s[0], rows_s[0]
+    #     lon_small = lon_grid_LS[c0, r0]
+    #     lat_small = lat_grid_LS[c0, r0]
+    #     snap_small = i
+    #     print(f"\n>>> FIRST SMALL GAP (within bbox) found at snapshot i={i}  ({small_date})"
+    #           f"  — example pixel: col={c0}, row={r0}"
+    #           f"  (lon={lon_small}, lat={lat_small})"
+    #           f"  [small gap pixels in bbox = {(small_mask & bbox_mask).sum()}"
+    #           f"  | total small gaps = {small_mask.sum()}]\n")
+    #
+    # if not _found_large and (large_mask & bbox_mask).sum() > 0:
+    #     _found_large = True
+    #     large_date = start_date + timedelta(hours=int(i))
+    #     cols_l, rows_l = np.where(large_mask & bbox_mask)
+    #     c0, r0 = cols_l[0], rows_l[0]
+    #     lon_large = lon_grid_LS[c0, r0]
+    #     lat_large = lat_grid_LS[c0, r0]
+    #     snap_large = i
+    #     print(f"\n>>> FIRST LARGE GAP (within bbox) found at snapshot i={i}  ({large_date})"
+    #           f"  — example pixel: col={c0}, row={r0}"
+    #           f"  (lon={lon_large}, lat={lat_large})"
+    #           f"  [large gap pixels in bbox = {(large_mask & bbox_mask).sum()}"
+    #           f"  | total large gaps = {large_mask.sum()}]\n")
+    #
+    # if _found_small and _found_large:
+    #     print(">>> Both small and large gaps found within bbox. Terminating program.")
+    #
+    #     # Map with both points
+    #     fig_pts, ax_pts = plt.subplots(
+    #         figsize=(8, 7),
+    #         subplot_kw={"projection": ccrs.Mercator()}
+    #     )
+    #     ax_pts.set_extent([0, 4.5, 39.5, 43.06], crs=ccrs.PlateCarree())
+    #     ax_pts.gridlines(draw_labels=True, linewidth=0.4, color="gray",
+    #                      alpha=0.6, linestyle="--")
+    #     land_mask = (mask_interp <= 0.5).astype(float)
+    #     ax_pts.contourf(lon_grid_LS, lat_grid_LS, land_mask, levels=[0.5, 1.0], cmap="copper", alpha=1.0, transform=ccrs.PlateCarree())
+    #
+    #     # Small gap point
+    #     ax_pts.plot(lon_small, lat_small,
+    #                 marker="o", markersize=10, color="dodgerblue",
+    #                 markeredgecolor="black", markeredgewidth=0.8,
+    #                 transform=ccrs.PlateCarree(), zorder=5,
+    #                 label=f"Small gap (i={snap_small})\nlon={lon_small:.4f}, lat={lat_small:.4f}")
+    #
+    #     # Large gap point
+    #     ax_pts.plot(lon_large, lat_large,
+    #                 marker="^", markersize=11, color="tomato",
+    #                 markeredgecolor="black", markeredgewidth=0.8,
+    #                 transform=ccrs.PlateCarree(), zorder=5,
+    #                 label=f"Large gap (i={snap_large})\nlon={lon_large:.4f}, lat={lat_large:.4f}")
+    #
+    #     ax_pts.legend(loc="lower left", fontsize=8, framealpha=0.9)
+    #     ax_pts.set_title("First small and large gap points within bbox", fontsize=11)
+    #
+    #     output_pts = "../figures/january_2026/gaps/first_gap_bbox.png"
+    #     fig_pts.savefig(output_pts, dpi=150, bbox_inches="tight")
+    #     plt.close(fig_pts)
+    #     print(f"  Map saved to: {output_pts}")
+    #
+    #     sys.exit(0)
 
     # Plot gap classification (commented by default)
-    # date = start_date + timedelta(hours=int(i))
-    # output_plot = f"/path/to/figures/gaps_vel_{str(i).zfill(3)}.png"
-    # plot_gaps(lon_grid_LS, lat_grid_LS, speed_LS_m, mask_interp, total_mask_t, small_mask, large_mask, output_plot, date)
+    date = start_date + timedelta(hours=int(i))
+    output_plot = f"../figures/january_2026/gaps/time_series_vel_mag_10_cells/gaps_vel_{str(i).zfill(3)}.png"
+    plot_gaps(lon_grid_LS, lat_grid_LS, speed_LS_m, mask_interp, total_mask_t, small_mask, large_mask, output_plot, date)
 
     # Base valid-data filter: only consider gaps where DIVAnd and Copernicus are available
     base_valid = (~np.isnan(speed_cop_m) & ~np.isnan(speed_rad_m) & ~np.isnan(speed_tot_m))
@@ -535,9 +535,15 @@ for i in range(n_times):
     stats_large[i, :] = [i] + row(stats_large_rad) + row(stats_large_tot)
 
     # Print summary
+<<<<<<< Updated upstream
     for lbl, d_rad, d_tot in [("SMALL gaps", stats_small_rad, stats_small_tot),
                                 ("LARGE gaps", stats_large_rad, stats_large_tot)]:
         print(f"\n  === {lbl} ===")
+=======
+    for gap_label, d_rad, d_tot in [("SMALL gaps", stats_small_rad, stats_small_tot),
+                                ("LARGE gaps", stats_large_rad, stats_large_tot)]:
+        print(f"\n  === {gap_label} ===")
+>>>>>>> Stashed changes
         print(f"  N = {d_rad['N']}  (rad)  |  N = {d_tot['N']}  (tot)")
         print(f"  avg_u   rad={d_rad['avg_u']:.6f}  tot={d_tot['avg_u']:.6f}  m/s")
         print(f"  avg_v   rad={d_rad['avg_v']:.6f}  tot={d_tot['avg_v']:.6f}  m/s")
@@ -562,8 +568,8 @@ HEADER = ("i  "
 
 base_dir = "../data/january_2026/gaps_data"
 
-output_small = os.path.join(base_dir, "gaps_stats_small_time_series.txt")
-output_large = os.path.join(base_dir, "gaps_stats_large_time_series.txt")
+output_small = os.path.join(base_dir, "gaps_stats_small_time_series_10_cells.txt")
+output_large = os.path.join(base_dir, "gaps_stats_large_time_series_10_cells.txt")
 
 np.savetxt(output_small, stats_small, fmt="%.6f", delimiter=" ", header=HEADER)
 np.savetxt(output_large, stats_large, fmt="%.6f", delimiter=" ", header=HEADER)

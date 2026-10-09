@@ -501,3 +501,348 @@ def kinetic_energy(u, v):
         Kinetic energy field (m²/s²)
     """
     return 0.5 * (u**2 + v**2)
+
+
+# --------------------------------------------------------------
+
+
+def _fill_nan_2d(field):
+    """
+    Fills NaN gaps in a 2D field by interpolating over the array index grid
+    (i, j), so that the FFT used by `kinetic_energy_spectrum` does not
+    propagate NaNs to every wavenumber.
+
+    Strategy:
+    ---------
+    1. Linear interpolation (griddata) using the valid points as support.
+    2. Any remaining NaNs (points outside the convex hull of valid data,
+       typically along the domain edges) are filled with nearest-neighbour
+       interpolation.
+
+    Parameters:
+    -----------
+    field : ndarray (2D)
+        Input field, possibly containing NaNs.
+
+    Returns:
+    --------
+    filled : ndarray (2D)
+        Field with all NaNs replaced by interpolated values. If the field
+        has no valid (non-NaN) points at all, it is returned unchanged.
+    """
+    ny, nx = field.shape
+    ii, jj = np.meshgrid(np.arange(ny), np.arange(nx), indexing='ij')
+
+    valid = ~np.isnan(field)
+    if not np.any(valid):
+        return field  # nothing to interpolate from
+
+    points = np.column_stack((ii[valid], jj[valid]))
+    values = field[valid]
+    xi = np.column_stack((ii.ravel(), jj.ravel()))
+
+    filled = griddata(points, values, xi, method='linear').reshape(field.shape)
+
+    still_nan = np.isnan(filled)
+    if np.any(still_nan):
+        filled_nn = griddata(points, values, xi, method='nearest').reshape(field.shape)
+        filled[still_nan] = filled_nn[still_nan]
+
+    return filled
+
+
+# --------------------------------------------------------------
+
+
+def kinetic_energy_spectrum(u, v, dx, dy, remove_mean=True, apply_window=True,
+                             max_nan_fraction=0.5, crop_to_valid_bbox=True):
+    """
+    Calculates the isotropic (1D, radially-averaged) kinetic energy spectrum
+    of a 2D velocity field on a regular grid, via a 2D FFT.
+
+    Method:
+    -------
+    0. Cropping to the coverage footprint (`crop_to_valid_bbox`): fields such
+       as the HF-radar total-velocity field mapped onto the LS grid are only
+       defined within the radar's coverage footprint; every grid node
+       outside it is NaN "by construction", not a small gap to fill in. If
+       these were left in, they would dominate the NaN fraction and, worse,
+       interpolating over them would fabricate data over regions with no
+       observation at all. So, by default, the field is first cropped to
+       the smallest bounding box containing any valid (non-NaN) point, and
+       everything below (NaN fraction check, gap filling, FFT) operates on
+       that cropped footprint only.
+    1. NaN handling: within the (possibly cropped) field, small remaining
+       gaps cannot be passed to an FFT (a single NaN would spread to every
+       wavenumber), so they are filled with `_fill_nan_2d`. If the fraction
+       of NaNs still exceeds `max_nan_fraction`, a ValueError is raised
+       instead of returning a spectrum that would not be trustworthy (e.g.
+       a timestep where the radar footprint itself is mostly empty).
+    2. The mean (k=0 component) is optionally removed so the spectrum
+       describes the turbulent/eddying part of the flow rather than the
+       mean current.
+    3. A 2D Hann window is optionally applied to taper the field towards
+       zero at the domain edges. This is important because the domain is
+       not periodic; without tapering, the sharp edges leak energy into
+       artificially high wavenumbers (spectral leakage).
+    4. u and v are Fourier-transformed (np.fft.fft2) and the 2D kinetic
+       energy spectral density is built as
+           E_2d(kx, ky) = 0.5 * (|U(kx,ky)|^2 + |V(kx,ky)|^2) * dx * dy / (nx * ny)
+       which is the standard periodogram normalisation (so that summing
+       E_2d over all (kx, ky) and multiplying by dkx*dky approximates the
+       mean kinetic energy of the (detrended) field, i.e. a discrete
+       Parseval relation).
+    5. The 2D spectrum is azimuthally averaged over rings of constant
+       |k| = sqrt(kx^2 + ky^2) to obtain the isotropic 1D spectrum E(k),
+       which is what is usually compared against theoretical slopes
+       (e.g. k^-3 or k^-5/3) or against another product's spectrum.
+
+    Parameters:
+    -----------
+    u, v : ndarray (2D)
+        East and north velocity components (m/s), on a regular grid.
+        May contain NaNs (land, no radar coverage, gaps, etc.).
+    dx, dy : float
+        Grid spacing in metres along x (longitude) and y (latitude).
+    remove_mean : bool
+        If True (default), subtract the spatial mean of u and v before
+        transforming, so the spectrum reflects the eddying field only.
+    apply_window : bool
+        If True (default), apply a 2D Hann window before the FFT to reduce
+        spectral leakage from the non-periodic domain edges.
+    max_nan_fraction : float
+        Maximum allowed fraction of NaN points (0-1) *within the cropped
+        footprint* (see `crop_to_valid_bbox`). If exceeded, a ValueError is
+        raised rather than computing an unreliable spectrum.
+    crop_to_valid_bbox : bool
+        If True (default), crop the field to the bounding box of valid
+        (non-NaN) data before doing anything else. Set to False only if
+        `u`/`v` are already a dense field with just a few scattered gaps
+        (e.g. a model field with only land points missing).
+
+    Returns:
+    --------
+    k : ndarray (1D)
+        Isotropic wavenumber bins (rad/m), excluding k=0.
+    Ek : ndarray (1D)
+        Kinetic energy spectral density at each wavenumber (m^3/s^2, i.e.
+        energy per unit wavenumber), such that trapz(Ek, k) ≈ mean KE of
+        the (detrended) field.
+    """
+    u = np.asarray(u, dtype=float)
+    v = np.asarray(v, dtype=float)
+
+    if u.shape != v.shape:
+        raise ValueError("u and v must have the same shape")
+    if u.ndim != 2:
+        raise ValueError("u and v must be 2D fields")
+
+    # --- Crop to the bounding box of the actual data coverage -----------
+    if crop_to_valid_bbox:
+        valid = ~(np.isnan(u) | np.isnan(v))
+        if not np.any(valid):
+            raise ValueError(
+                "kinetic_energy_spectrum: the velocity field has no valid "
+                "(non-NaN) points at all."
+            )
+        rows = np.where(np.any(valid, axis=1))[0]
+        cols = np.where(np.any(valid, axis=0))[0]
+        u = u[rows[0]:rows[-1] + 1, cols[0]:cols[-1] + 1]
+        v = v[rows[0]:rows[-1] + 1, cols[0]:cols[-1] + 1]
+
+    ny, nx = u.shape
+
+    # --- Check and fill NaNs -----------------------------------------
+    nan_mask = np.isnan(u) | np.isnan(v)
+    nan_fraction = np.sum(nan_mask) / nan_mask.size
+
+    if nan_fraction > max_nan_fraction:
+        raise ValueError(
+            f"kinetic_energy_spectrum: {100 * nan_fraction:.1f}% of the "
+            f"velocity field is NaN within its coverage footprint "
+            f"(limit={100 * max_nan_fraction:.0f}%); "
+            "the spectrum would not be reliable."
+        )
+
+    if nan_fraction > 0:
+        u = _fill_nan_2d(u)
+        v = _fill_nan_2d(v)
+
+    if np.any(np.isnan(u)) or np.any(np.isnan(v)):
+        raise ValueError(
+            "kinetic_energy_spectrum: could not fill all NaNs "
+            "(the field may be entirely NaN)."
+        )
+
+    # --- Remove mean flow and taper edges ------------------------------
+    if remove_mean:
+        u = u - np.mean(u)
+        v = v - np.mean(v)
+
+    if apply_window:
+        window_2d = np.outer(np.hanning(ny), np.hanning(nx))
+        # Rescale so the window does not bias the total variance too much
+        norm = np.sqrt(np.mean(window_2d ** 2))
+        if norm > 0:
+            u = u * window_2d / norm
+            v = v * window_2d / norm
+
+    # --- 2D FFT and power spectral density ------------------------------
+    Lx = nx * dx
+    Ly = ny * dy
+
+    u_hat = np.fft.fft2(u)
+    v_hat = np.fft.fft2(v)
+
+    psd_u = (np.abs(u_hat) ** 2) * dx * dy / (nx * ny)
+    psd_v = (np.abs(v_hat) ** 2) * dx * dy / (nx * ny)
+
+    ke_2d = 0.5 * (psd_u + psd_v)
+
+    # --- Wavenumber grid --------------------------------------------------
+    kx = 2 * np.pi * np.fft.fftfreq(nx, d=dx)
+    ky = 2 * np.pi * np.fft.fftfreq(ny, d=dy)
+    kx_grid, ky_grid = np.meshgrid(kx, ky)
+    k_mod = np.sqrt(kx_grid ** 2 + ky_grid ** 2)
+
+    # --- Azimuthal (radial) averaging into an isotropic 1D spectrum -----
+    dkx = 2 * np.pi / Lx
+    dky = 2 * np.pi / Ly
+    dk = min(dkx, dky)
+
+    k_max = np.max(k_mod)
+    n_bins = max(int(np.floor(k_max / dk)), 1)
+    k_edges = np.arange(0, n_bins + 1) * dk
+    k_centers = 0.5 * (k_edges[:-1] + k_edges[1:])
+
+    bin_idx = np.digitize(k_mod.ravel(), k_edges) - 1
+    ke_flat = ke_2d.ravel()
+
+    Ek = np.full(len(k_centers), np.nan)
+    for b in range(len(k_centers)):
+        sel = bin_idx == b
+        if np.any(sel):
+            # Integrate the 2D PSD over the annulus and divide by dk so
+            # that Ek has units of energy per unit wavenumber.
+            Ek[b] = np.sum(ke_flat[sel]) * dkx * dky / dk
+
+    # Drop the k=0 bin, it is not meaningful for a spectrum
+    valid = k_centers > 0
+    return k_centers[valid], Ek[valid]
+
+
+# --------------------------------------------------------------
+
+
+def spectral_error(k_ref, Ek_ref, k_test, Ek_test):
+    """
+    Compares two kinetic-energy spectra (e.g. model vs. observations) and
+    quantifies how well the energy distribution across scales agrees,
+    independently of comparing the fields point by point in physical space.
+
+    How the error is calculated:
+    -----------------------------
+    1. The two spectra may come from grids of slightly different size, so
+       `Ek_test` is linearly interpolated (np.interp) onto the wavenumber
+       axis of the reference spectrum `k_ref`, restricted to the
+       overlapping wavenumber range of both spectra.
+    2. Per-wavenumber error:
+           err_abs(k) = Ek_test(k) - Ek_ref(k)
+           err_rel(k) = err_abs(k) / Ek_ref(k)
+       `err_abs` shows at which scales (large mesoscale eddies vs. small
+       submesoscale features) the energy is over- or under-estimated;
+       `err_rel` normalises that by the reference energy at that scale.
+    3. A single scalar summary, the spectral error, is computed as the
+       relative L2-norm distance between the two spectra:
+
+           spectral_error = || Ek_test - Ek_ref ||_2 / || Ek_ref ||_2
+                          = sqrt( sum_k (Ek_test(k) - Ek_ref(k))^2 )
+                            / sqrt( sum_k Ek_ref(k)^2 )
+
+       This is the spectral-space analogue of a normalised RMSE: it is 0
+       when the two spectra are identical, and grows when energy is
+       misplaced across wavenumbers, even if the total (integrated)
+       kinetic energy happens to match.
+
+    Parameters:
+    -----------
+    k_ref, Ek_ref : ndarray (1D)
+        Wavenumbers and KE spectral density of the reference field
+        (e.g. the model, or the field taken as "truth").
+    k_test, Ek_test : ndarray (1D)
+        Wavenumbers and KE spectral density of the field being evaluated
+        (e.g. the DIVAnd/LS reconstruction).
+
+    Returns:
+    --------
+    k_common : ndarray (1D)
+        Wavenumbers (subset of k_ref) over which the comparison is made.
+    err_abs : ndarray (1D)
+        Absolute spectral error at each wavenumber (same units as Ek).
+    err_rel : ndarray (1D)
+        Relative spectral error at each wavenumber (dimensionless).
+    spectral_error_scalar : float
+        Single relative L2-norm error summarising the whole spectrum.
+    """
+    k_ref = np.asarray(k_ref, dtype=float)
+    Ek_ref = np.asarray(Ek_ref, dtype=float)
+    k_test = np.asarray(k_test, dtype=float)
+    Ek_test = np.asarray(Ek_test, dtype=float)
+
+    # Keep only the wavenumber range common to both spectra
+    k_lo = max(np.nanmin(k_ref), np.nanmin(k_test))
+    k_hi = min(np.nanmax(k_ref), np.nanmax(k_test))
+    in_range = (k_ref >= k_lo) & (k_ref <= k_hi)
+
+    k_common = k_ref[in_range]
+    Ek_ref_common = Ek_ref[in_range]
+    Ek_test_common = np.interp(k_common, k_test, Ek_test)
+
+    err_abs = Ek_test_common - Ek_ref_common
+    with np.errstate(divide='ignore', invalid='ignore'):
+        err_rel = np.where(Ek_ref_common != 0, err_abs / Ek_ref_common, np.nan)
+
+    l2_ref = np.sqrt(np.nansum(Ek_ref_common ** 2))
+    spectral_error_scalar = (
+        np.sqrt(np.nansum(err_abs ** 2)) / l2_ref if l2_ref > 0 else np.nan
+    )
+
+    return k_common, err_abs, err_rel, spectral_error_scalar
+
+
+# --------------------------------------------------------------
+
+
+def resample_spectrum(k_target, k_src, Ek_src):
+    """
+    Linearly resamples a 1D spectrum onto a fixed target wavenumber axis.
+
+    Needed because `kinetic_energy_spectrum` crops each field to its own
+    valid-data bounding box (`crop_to_valid_bbox=True`), so the wavenumber
+    axis it returns can have a different length/range at every timestep
+    (e.g. the HF-radar footprint is larger or smaller depending on
+    conditions). To store spectra from many timesteps in a single fixed-size
+    array (e.g. a (time, wavenumber) NetCDF variable), each one must first
+    be put on a common axis.
+
+    Parameters:
+    -----------
+    k_target : ndarray (1D)
+        The fixed wavenumber axis to resample onto (rad/m).
+    k_src, Ek_src : ndarray (1D)
+        The wavenumber axis and spectral density actually computed for this
+        field (as returned by `kinetic_energy_spectrum` or `spectral_error`).
+
+    Returns:
+    --------
+    Ek_on_target : ndarray (1D)
+        `Ek_src` linearly interpolated onto `k_target`. Values of
+        `k_target` outside the range covered by `k_src` are set to NaN
+        (extrapolation is not attempted, since it is not meaningful for a
+        wavenumber spectrum defined only up to a data-dependent cutoff).
+    """
+    k_target = np.asarray(k_target, dtype=float)
+    k_src = np.asarray(k_src, dtype=float)
+    Ek_src = np.asarray(Ek_src, dtype=float)
+
+    return np.interp(k_target, k_src, Ek_src, left=np.nan, right=np.nan)
