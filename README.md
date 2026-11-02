@@ -216,6 +216,8 @@ Variational_analysis_ICATMAR/
 │   ├── loop_rmse_all_methods.jl
 │   ├── loop_save_divands_icatmar_grid.jl
 │   ├── loop_stats_10_days.jl
+│   ├── vort_pdf.py
+│   ├── spectrum_energy.py
 │   ├── obs_point_gap.py
 │   ├── stats_module.jl
 │   ├── fortran/
@@ -317,6 +319,8 @@ Main processing and analysis scripts. Scripts are designed to be run from within
 | `loop_rmse_all_methods.jl` | Julia | Computes RMSE for all three methods (DIVAnd-radials, DIVAnd-totals, LS) over the full time series against Copernicus data |
 | `loop_avg_diff_std_all_methods.jl` | Julia | Computes domain-averaged velocity time series, differences (u, v and speed) and relative speed differences for DIVAnd-radials, DIVAnd-totals and LS against Copernicus; saves temporal mean and standard-deviation maps to NetCDF |
 | `loop_stats_10_days.jl` | Julia | Full statistical comparison (divergence, vorticity, kinetic energy, mean, correlation) between DIVAnd and LS against Copernicus over 10-day windows |
+| `vort_pdf.py` | Python | Computes and plots empirical PDFs of normalized relative vorticity (ζ/f) for Copernicus, LS, DIV and LS+DIV; overlays Gaussian distributions and exports mean, sample standard deviation, skewness and excess kurtosis to CSV |
+| `spectrum_energy.py` | Python | Computes 1D kinetic-energy spectra along three configurable transects, averages spectra across transects, calculates error spectra relative to Copernicus and exports a spectral summary CSV |
 | `loop_neighbours_gaps.jl` | Julia | Analyses spatial neighbourhood structure of gap regions and their surrounding observations |
 | `loop_obs_gap_vel.jl` | Julia | Extracts and stores velocity observations surrounding each identified gap for later analysis |
 | `stats_module.jl` | Julia | Shared module with statistical functions (RMSE, correlation, divergence, vorticity, KE) used by other Julia scripts |
@@ -495,7 +499,69 @@ julia loop_neighbours_gaps.jl
 julia loop_obs_gap_vel.jl
 ```
 
-### 11. Generate figures
+### 11. Vorticity PDFs and 1D kinetic-energy spectra
+
+These two Python scripts provide complementary scale- and distribution-based diagnostics of the reconstructed surface currents. Run them from the `src/` directory after generating the corresponding NetCDF files in `data/january_2026/stats_data/`.
+
+#### Empirical PDFs of normalized relative vorticity — `vort_pdf.py`
+
+The script reads `vorticity_methods.nc` (normally produced by `loop_stats_10_days.jl`) and compares four products: Copernicus, LS, DIV (DIVAnd from radial observations) and LS+DIV (DIVAnd from total velocities). At every grid point, relative vorticity is normalized by the local Coriolis parameter, `f = 2 Ω sin(latitude)`, giving the dimensionless quantity `ζ/f`. All available time steps and valid grid points are pooled for each method; NaN values are excluded.
+
+For each product, the script calculates a normalized empirical histogram (PDF) and overlays a Gaussian distribution using that product's sample mean and standard deviation. A common histogram bin width is used for all four methods to make the PDFs directly comparable. The width follows the robust IQR-based rule
+
+```
+h = c × IQR / n^(1/3)
+```
+
+where `IQR` is the interquartile range and `n` is the number of valid samples. The configurable coefficient is `--bin-const` (default `2.0`; recommended range `2.0–2.6`). The common width is determined from the dataset with the largest number of valid points.
+
+The script also computes, for each method:
+- **Mean** of `ζ/f`.
+- **Standard deviation**, using the sample estimate (`ddof=1`).
+- **Skewness**, describing the asymmetry of the distribution.
+- **Excess kurtosis** (Fisher definition; a Gaussian distribution has a value of 0).
+
+It writes the statistics to `vorticity_stats.csv` and saves individual PDFs, a 2×2 comparison, and an overlaid comparison in `figures/january_2026/physics/vorticity/`.
+
+Run with the default input/output paths:
+
+```bash
+python vort_pdf.py
+```
+
+Optional arguments:
+
+```bash
+python vort_pdf.py --input ../data/january_2026/stats_data/vorticity_methods.nc \\
+                   --outdir ../figures/january_2026/physics/vorticity \\
+                   --bin-const 2.0
+```
+
+#### 1D kinetic-energy spectra along three transects — `spectrum_energy.py`
+
+The script reads `velocity_methods.nc` and calculates 1D kinetic-energy spectra along three user-configurable transects. Their endpoints are specified in the `CONFIG["transects"]` list (longitude/latitude pairs), so the locations and orientations can be changed to investigate other parts of the domain. By default, the three transects sample an anticyclonic-eddy region, a central coast-parallel section and a zonal section towards the coast.
+
+The velocity components are interpolated onto regularly spaced points along each transect using barycentric weights from a Delaunay triangulation. The spacing defaults to the native grid spacing (`transect_dx_km = None`); it can be overridden in the configuration. Before computing spectra, the script applies a **common temporal mask**: a snapshot is retained only when both velocity components are finite at every point along the transect for all available methods. Thus, every method and its error spectrum use the same snapshots, with no gap-filling or mean substitution.
+
+For each valid snapshot, a linear trend is removed from each velocity component and a Hann window is applied. The 1D kinetic-energy spectrum is then calculated from the Fourier transforms of `u` and `v`. Spectra are averaged over the common snapshots for each transect. The three transect-mean spectra are subsequently interpolated in log–log space onto the wavenumber grid of the shortest transect and averaged to obtain the mean spectrum across transects.
+
+Copernicus is the reference product. In addition to the spectra of each method (Copernicus, DIV, LS+DIV and LS), the script calculates error spectra from the velocity differences relative to Copernicus and reports both `E_err(k)` and `E_err(k)/E_ref(k)`. The default spectral density is expressed per rad/km (`per_rad = True`; set it to `False` in `CONFIG` for per cycle/km). A resolved-scale threshold of 0.5 means that the script brackets the wavelength at which a method's energy first falls below 50% of the reference energy.
+
+The script saves spectra for each transect, the mean spectrum across transects, a mean error-spectrum figure, and `ke_spectrum_summary.csv` in `figures/january_2026/physics/`.
+
+Run with the default configuration:
+
+```bash
+python spectrum_energy.py
+```
+
+An alternative velocity NetCDF file and output directory can be supplied positionally:
+
+```bash
+python spectrum_energy.py ../data/january_2026/stats_data/velocity_methods.nc ../figures/january_2026/physics
+```
+
+### 12. Generate figures
 
 ```bash
 # Julia plots
