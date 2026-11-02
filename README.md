@@ -216,6 +216,7 @@ Variational_analysis_ICATMAR/
 │   ├── loop_rmse_all_methods.jl
 │   ├── loop_save_divands_icatmar_grid.jl
 │   ├── loop_stats_10_days.jl
+│   ├── spatial_correlation_phys_var.jl
 │   ├── vort_pdf.py
 │   ├── spectrum_energy.py
 │   ├── obs_point_gap.py
@@ -318,7 +319,8 @@ Main processing and analysis scripts. Scripts are designed to be run from within
 | `loop_save_divands_icatmar_grid.jl` | Julia | Runs DIVAnd on the ICATMAR LS grid for all hourly snapshots, reconstructing radial- and total-based velocity fields with separate parameter sets and saving them to NetCDF |
 | `loop_rmse_all_methods.jl` | Julia | Computes RMSE for all three methods (DIVAnd-radials, DIVAnd-totals, LS) over the full time series against Copernicus data |
 | `loop_avg_diff_std_all_methods.jl` | Julia | Computes domain-averaged velocity time series, differences (u, v and speed) and relative speed differences for DIVAnd-radials, DIVAnd-totals and LS against Copernicus; saves temporal mean and standard-deviation maps to NetCDF |
-| `loop_stats_10_days.jl` | Julia | Full statistical comparison (divergence, vorticity, kinetic energy, mean, correlation) between DIVAnd and LS against Copernicus over 10-day windows |
+| `loop_stats_10_days.jl` | Julia | Processes the 264 hourly snapshots and compares Copernicus, DIVAnd-radials, DIVAnd-totals and LS on the common LS grid; computes domain-mean divergence, vorticity and kinetic energy, spatial Pearson correlations against Copernicus, and writes ASCII statistics plus `vorticity_methods.nc` and `velocity_methods.nc` for subsequent diagnostics |
+| `spatial_correlation_phys_var.jl` | Julia | Computes pointwise temporal Pearson-correlation maps between Copernicus and DIVAnd-totals, DIVAnd-radials and LS for divergence, relative vorticity and kinetic energy (nine maps in total); saves them to `correlation_maps_icatmar_optimal.nc` |
 | `vort_pdf.py` | Python | Computes and plots empirical PDFs of normalized relative vorticity (ζ/f) for Copernicus, LS, DIV and LS+DIV; overlays Gaussian distributions and exports mean, sample standard deviation, skewness and excess kurtosis to CSV |
 | `spectrum_energy.py` | Python | Computes 1D kinetic-energy spectra along three configurable transects, averages spectra across transects, calculates error spectra relative to Copernicus and exports a spectral summary CSV |
 | `loop_neighbours_gaps.jl` | Julia | Analyses spatial neighbourhood structure of gap regions and their surrounding observations |
@@ -495,11 +497,31 @@ python loop_gap_filling_divand_by_size.py
 julia loop_rmse_all_methods.jl
 julia loop_avg_diff_std_all_methods.jl
 julia loop_stats_10_days.jl
+julia spatial_correlation_phys_var.jl
 julia loop_neighbours_gaps.jl
 julia loop_obs_gap_vel.jl
 ```
 
-### 11. Vorticity PDFs and 1D kinetic-energy spectra
+### 11. Pointwise temporal correlation maps of physical variables
+
+Run the Julia script after `loop_stats_10_days.jl` has generated the DIVAnd velocity fields and the input datasets are available:
+
+```bash
+julia spatial_correlation_phys_var.jl
+```
+
+The script processes the 264 hourly snapshots from January 2026 and compares the Copernicus MEDSEA reference with three HF-radar reconstruction products: DIVAnd-radials, DIVAnd-totals and Least Squares (LS). All fields are mapped to the common ICATMAR LS grid. LS total-velocity observations are filtered using `GDOP ≤ 2.0` and `speed ≤ 1.2 m/s`; Copernicus velocities are interpolated onto the same grid.
+
+At each time step, the script calculates three physical quantities for every product:
+- **Divergence**, `∂u/∂x + ∂v/∂y`.
+- **Relative vorticity**, `∂v/∂x − ∂u/∂y`.
+- **Kinetic energy**, `0.5 (u² + v²)`.
+
+It then computes the **temporal Pearson correlation at every grid point**, comparing each reconstruction with Copernicus independently. Only time steps for which both time series are valid are used at a given grid point; at least three common valid samples are required, and correlations are left undefined when either series has zero variance. The result is nine 2-D maps (three physical variables × three reconstruction methods).
+
+The maps are saved in the NetCDF file `data/january_2026/stats_data/correlation_maps_icatmar_optimal.nc`, with variables named `correlation_divergence_tot`, `correlation_vorticity_tot`, `correlation_kinetic_energy_tot` (and corresponding `_rad` and `_LS` variables). The file also contains the 2-D longitude and latitude coordinates.
+
+### 12. Vorticity PDFs and 1D kinetic-energy spectra
 
 These two Python scripts provide complementary scale- and distribution-based diagnostics of the reconstructed surface currents. Run them from the `src/` directory after generating the corresponding NetCDF files in `data/january_2026/stats_data/`.
 
@@ -561,7 +583,7 @@ An alternative velocity NetCDF file and output directory can be supplied positio
 python spectrum_energy.py ../data/january_2026/stats_data/velocity_methods.nc ../figures/january_2026/physics
 ```
 
-### 12. Generate figures
+### 13. Generate figures
 
 ```bash
 # Julia plots
