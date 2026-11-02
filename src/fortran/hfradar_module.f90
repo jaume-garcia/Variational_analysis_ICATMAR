@@ -132,7 +132,7 @@ contains
     ! --- Robust Data Ingestion Loop ---
     do i = 1, n_lines
         ! Attempt explicit formatted read for high-precision scientific notation
-        read(unit, '(8ES25.15)', iostat=ios) lond, latd, velu, velv, bear, velo, dir, antenna_flag
+        read(unit, *, iostat=ios) lond, latd, velu, velv, bear, velo, dir, antenna_flag
         
         if (ios /= 0) then
             ! Fallback to list-directed (free-format) input if explicit format fails
