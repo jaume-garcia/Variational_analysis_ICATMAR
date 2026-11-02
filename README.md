@@ -144,6 +144,7 @@ mkdir -p figures/january_2026/gaps_by_size/obs_gap_large
 mkdir -p figures/january_2026/gaps_by_size/obs_gap_small
 mkdir -p figures/january_2026/statistics
 mkdir -p figures/january_2026/physics
+mkdir -p figures/january_2026/physics/vorticity
 mkdir -p figures/january_2026/medsea_GT
 mkdir -p figures/january_2026/medsea_radials
 ```
@@ -207,7 +208,7 @@ Variational_analysis_ICATMAR/
 ├── src/
 │   ├── create_medsea_radials.py
 │   ├── gap_class_LS.py
-│   ├── loop_diff_grid_temporal_avg.jl
+│   ├── loop_avg_diff_std_all_methods.jl
 │   ├── loop_gap_filling_divand.py
 │   ├── loop_gap_filling_divand_by_size.py
 │   ├── loop_neighbours_gaps.jl
@@ -312,9 +313,9 @@ Main processing and analysis scripts. Scripts are designed to be run from within
 | `obs_point_gap.py` | Python | Extracts observation points that fall inside identified gap regions |
 | `loop_gap_filling_divand.py` | Python | Main gap-filling loop: runs DIVAnd reconstruction (both radial-based and total-based) for each time step and evaluates RMSE against Copernicus ground truth inside LS gap regions |
 | `loop_gap_filling_divand_by_size.py` | Python | Same as above but stratifies the evaluation by gap size category |
-| `loop_save_divands_icatmar_grid.jl` | Julia | Saves DIVAnd-reconstructed velocity fields interpolated onto the ICATMAR LS grid for all time steps |
+| `loop_save_divands_icatmar_grid.jl` | Julia | Runs DIVAnd on the ICATMAR LS grid for all hourly snapshots, reconstructing radial- and total-based velocity fields with separate parameter sets and saving them to NetCDF |
 | `loop_rmse_all_methods.jl` | Julia | Computes RMSE for all three methods (DIVAnd-radials, DIVAnd-totals, LS) over the full time series against Copernicus data |
-| `loop_diff_grid_temporal_avg.jl` | Julia | Computes temporal mean velocity differences and standard deviations between each method and the Copernicus ground truth over the full domain |
+| `loop_avg_diff_std_all_methods.jl` | Julia | Computes domain-averaged velocity time series, differences (u, v and speed) and relative speed differences for DIVAnd-radials, DIVAnd-totals and LS against Copernicus; saves temporal mean and standard-deviation maps to NetCDF |
 | `loop_stats_10_days.jl` | Julia | Full statistical comparison (divergence, vorticity, kinetic energy, mean, correlation) between DIVAnd and LS against Copernicus over 10-day windows |
 | `loop_neighbours_gaps.jl` | Julia | Analyses spatial neighbourhood structure of gap regions and their surrounding observations |
 | `loop_obs_gap_vel.jl` | Julia | Extracts and stores velocity observations surrounding each identified gap for later analysis |
@@ -488,7 +489,7 @@ python loop_gap_filling_divand_by_size.py
 
 ```bash
 julia loop_rmse_all_methods.jl
-julia loop_diff_grid_temporal_avg.jl
+julia loop_avg_diff_std_all_methods.jl
 julia loop_stats_10_days.jl
 julia loop_neighbours_gaps.jl
 julia loop_obs_gap_vel.jl
